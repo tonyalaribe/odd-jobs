@@ -9,7 +9,8 @@ import Control.Concurrent.Async (race)
 import Control.Concurrent.MVar (newEmptyMVar, takeMVar, tryPutMVar, tryTakeMVar)
 import Data.Coerce (coerce)
 import Data.Functor (void)
-import Data.Text
+import qualified Data.Text as T
+import Data.Text (Text)
 import OddJobs.Job (startJobRunner, Config(..), LogLevel(..), LogEvent(..))
 import OddJobs.Types (UIConfig(..), Seconds(..), delaySeconds)
 import qualified System.Posix.Daemonize as Daemonize

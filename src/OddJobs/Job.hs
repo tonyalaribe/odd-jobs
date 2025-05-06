@@ -85,7 +85,8 @@ where
 import OddJobs.Types
 import qualified Data.Pool as Pool
 import Data.Pool(Pool)
-import Data.Text as T
+import qualified Data.Text as T
+import Data.Text (Text)
 import Database.PostgreSQL.Simple as PGS
 import Database.PostgreSQL.Simple.Notification
 import UnliftIO.Async hiding (poll)
