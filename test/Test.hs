@@ -90,6 +90,7 @@ tests appPool jobPool = testGroup "All tests"
                              , testEnsureShutdown appPool jobPool
                              , testGracefulShutdown appPool jobPool
                              , testPushFailedJobEndQueue jobPool
+                             , testEarliestRunAtOrder jobPool
                              , testRetryBackoff appPool jobPool
                              , testJobDeletion appPool jobPool
                              , testGroup "callback tests"
@@ -426,6 +427,33 @@ testPushFailedJobEndQueue jobPool = testCase "testPushFailedJobEndQueue" $ do
       assertEqual
         "Expecting the current job to be 2 since job 1 has been modified"
         (jobId job2) resId
+
+testEarliestRunAtOrder :: Pool Connection -> TestTree
+testEarliestRunAtOrder jobPool = testCase "earliest scheduled retries and expired locks run before fresh jobs" $
+  forM_ [Job.Retry, Job.Locked] $ \status ->
+    withRandomTable jobPool $ \tname -> do
+      now <- getCurrentTime
+      old <- Pool.withResource jobPool $ \conn -> do
+        old <- Job.scheduleJob conn tname (PayloadSucceed 0) (addUTCTime (-3600) now)
+        _ <- Job.saveJobIO conn tname old
+          { jobStatus = status, jobAttempts = 1
+          , jobLockedAt = if status == Job.Locked then Just (addUTCTime (-1800) now) else Nothing
+          , jobLockedBy = if status == Job.Locked then Just (Job.JobRunnerName "dead-worker") else Nothing
+          }
+        _ <- Job.createJob conn tname (PayloadSucceed 0)
+        pure old
+      selected <- newEmptyMVar
+      threads <- newIORef mempty
+      let config = Job.mkConfig (\_ _ -> pure ()) tname jobPool Job.UnlimitedConcurrentJobs
+            (putMVar selected . jobId) (\cfg -> cfg { Job.cfgJobOrdering = Job.EarliestRunAtFirst })
+          env = Job.RunnerEnv { Job.envConfig = config, Job.envJobThreadsRef = threads }
+      started <- runReaderT (Job.pollRunJob "fairness-test" Nothing) env
+      case started of
+        Nothing -> assertFailure "expected an eligible job"
+        Just worker -> do
+          wait worker
+          actual <- takeMVar selected
+          assertEqual "overdue work must not starve behind attempt-zero jobs" (jobId old) actual
 
 testOnJobFailed appPool jobPool = testCase "job error handler" $ do
   withRandomTable jobPool $ \tname -> do

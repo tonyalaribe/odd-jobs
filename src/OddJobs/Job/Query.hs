@@ -4,7 +4,9 @@
 --   see https://gitlab.haskell.org/ghc/ghc/-/issues/16520
 module OddJobs.Job.Query
   ( jobPollingSql
+  , jobPollingSqlWithOrder
   , jobPollingWithResourceSql
+  , jobPollingWithResourceSqlWithOrder
   , killJobPollingSql
   , qWithResources
   , createJobQuery
@@ -16,22 +18,32 @@ module OddJobs.Job.Query
 where
 
 import Database.PostgreSQL.Simple(Query)
+import OddJobs.Types (JobOrdering(..))
 import Data.String
 
 -- | Ref: 'jobPoller'
 jobPollingSql :: Query
-jobPollingSql =
+jobPollingSql = jobPollingSqlWithOrder FewestAttemptsFirst
+
+jobPollingSqlWithOrder :: JobOrdering -> Query
+jobPollingSqlWithOrder ordering =
   "update ? set status = ?, locked_at = ?, locked_by = ?, attempts=attempts+1 \
   \ WHERE id in (select id from ? where (run_at<=? AND ((status in ?) OR (status = ? and locked_at<?))) \
-  \ ORDER BY attempts ASC, run_at ASC LIMIT 1 FOR UPDATE) RETURNING id"
+  \ ORDER BY " <> jobOrderClause ordering <> " LIMIT 1 FOR UPDATE) RETURNING id"
 
 jobPollingWithResourceSql :: Query
-jobPollingWithResourceSql =
+jobPollingWithResourceSql = jobPollingWithResourceSqlWithOrder FewestAttemptsFirst
+
+jobPollingWithResourceSqlWithOrder :: JobOrdering -> Query
+jobPollingWithResourceSqlWithOrder ordering =
   " UPDATE ? SET status = ?, locked_at = ?, locked_by = ?, attempts = attempts + 1 \
   \ WHERE id in (select id from ? where (run_at<=? AND ((status in ?) OR (status = ? and locked_at<?))) \
   \ AND ?(id) \
-  \ ORDER BY attempts ASC, run_at ASC LIMIT 1) \
-  \ RETURNING id"
+  \ ORDER BY " <> jobOrderClause ordering <> " LIMIT 1) RETURNING id"
+
+jobOrderClause :: JobOrdering -> Query
+jobOrderClause FewestAttemptsFirst = "attempts ASC, run_at ASC"
+jobOrderClause EarliestRunAtFirst = "run_at ASC, attempts ASC"
 
 -- | Ref: 'killJobPoller'
 killJobPollingSql :: Query

@@ -12,6 +12,7 @@ module OddJobs.Job
     --
     -- $config
   , Config(..)
+  , JobOrdering(..)
   , ConcurrencyControl(..)
   , ResourceCfg(..)
 
@@ -581,12 +582,13 @@ pollRunJob processName mResCfg = do
     -- needs to remain open.
     pool <- getDbPool
     lockTimeout <- getDefaultJobTimeout
+    ordering <- cfgJobOrdering . envConfig <$> getRunnerEnv
     join $ withResource pool $ \pollerDbConn -> mask_ $ do
       log LevelDebug $ LogText $ toS $ "[" <> processName <> "] Polling the job queue.."
       t <- liftIO getCurrentTime
       r <- case mResCfg of
         Nothing -> liftIO $
-           PGS.query pollerDbConn jobPollingSql
+           PGS.query pollerDbConn (jobPollingSqlWithOrder ordering)
            ( tname
            , Locked
            , t
@@ -597,7 +599,7 @@ pollRunJob processName mResCfg = do
            , Locked
            , addUTCTime (fromIntegral $ negate $ unSeconds lockTimeout) t)
         Just ResourceCfg{..} -> liftIO $
-           PGS.query pollerDbConn jobPollingWithResourceSql
+           PGS.query pollerDbConn (jobPollingWithResourceSqlWithOrder ordering)
            ( tname
            , Locked
            , t

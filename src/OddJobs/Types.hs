@@ -296,6 +296,12 @@ data AllJobTypes
   -- | A custom 'IO' action for fetching the list of job-types.
   | AJTCustom (IO [Text])
 
+-- | Priority among jobs that are already eligible to run.
+-- EarliestRunAtFirst prevents retries and expired locks from starving behind
+-- a continuous stream of first-attempt jobs. Retry backoff still applies.
+data JobOrdering = FewestAttemptsFirst | EarliestRunAtFirst
+  deriving (Eq, Show)
+
 -- | While odd-jobs is highly configurable and the 'Config' data-type might seem
 -- daunting at first, it is not necessary to tweak every single configuration
 -- parameter by hand.
@@ -343,6 +349,9 @@ data Config = Config
     -- (architecture)](https://www.haskelltutorials.com/odd-jobs/guide.html#architecture)
     -- to find out more.
   , cfgPollingInterval :: Seconds
+
+    -- | Ordering of eligible jobs. Defaults to FewestAttemptsFirst.
+  , cfgJobOrdering :: JobOrdering
 
   -- | User-defined callback function that is called whenever a job succeeds.
   , cfgOnJobSuccess :: Job -> IO ()

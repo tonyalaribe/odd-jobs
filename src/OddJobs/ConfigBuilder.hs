@@ -68,6 +68,7 @@ mkConfig :: (LogLevel -> LogEvent -> IO ())
 mkConfig logger tname dbpool ccControl jrunner configOverridesFn =
   let cfg = configOverridesFn $ Config
             { cfgPollingInterval = defaultPollingInterval
+            , cfgJobOrdering = FewestAttemptsFirst
             , cfgOnJobSuccess = const $ pure ()
             , cfgOnJobFailed = []
             , cfgJobRunner = jrunner
