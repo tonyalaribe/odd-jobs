@@ -46,6 +46,7 @@ import Data.Ord (comparing, Down(..))
 import Data.Maybe (fromMaybe)
 import qualified OddJobs.ConfigBuilder as Job
 import UnliftIO
+import UnliftIO.Concurrent (threadDelay)
 import Control.Exception (ArithException)
 import Data.Bifunctor(first)
 import System.Environment (lookupEnv)
@@ -93,6 +94,7 @@ tests appPool jobPool = testGroup "All tests"
                              , testPushFailedJobEndQueue jobPool
                              , testEarliestRunAtOrder jobPool
                              , testNotificationOrdering jobPool
+                             , testSaturatedPoller jobPool
                              , testRetryBackoff appPool jobPool
                              , testJobDeletion appPool jobPool
                              , testGroup "callback tests"
@@ -489,6 +491,37 @@ testNotificationOrdering jobPool = testCase "notifications respect earliest sche
       assertEqual ("notification must wake the oldest eligible job: " <> show logs <> "; listener=" <> show listenerState) (Just $ jobId old) actual
       finished <- Timeout.timeout 5000000 (takeMVar completed)
       assertEqual "selected job must finish before table cleanup" (Just ()) finished
+
+testSaturatedPoller :: Pool Connection -> TestTree
+testSaturatedPoller jobPool = testCase "saturated poller waits between capacity checks" $
+  withRandomTable jobPool $ \tname -> do
+    _ <- Pool.withResource jobPool $ \conn -> Job.createJob conn tname (PayloadSucceed 0)
+    started <- newEmptyMVar
+    release <- newEmptyMVar
+    busy <- newEmptyMVar
+    checks <- newIORef (0 :: Int)
+    threads <- newIORef mempty
+    let logger _ event = case event of
+          Job.LogText "NOT polling the job queue due to concurrency control" -> do
+            atomicModifyIORef' checks (\n -> (n + 1, ()))
+            void $ tryPutMVar busy ()
+          _ -> pure ()
+        config = Job.mkConfig logger tname jobPool (Job.MaxConcurrentJobs 1)
+          (\_ -> putMVar started () >> takeMVar release)
+          (\cfg -> cfg { Job.cfgPollingInterval = 1 })
+        env = Job.RunnerEnv { Job.envConfig = config, Job.envJobThreadsRef = threads }
+    runReaderT (Job.pollRunJob "saturated-test" Nothing) env >>= \case
+      Nothing -> assertFailure "expected the queued job to start"
+      Just worker -> flip finally (putMVar release () >> wait worker) $ do
+        running <- Timeout.timeout 5000000 (takeMVar started)
+        assertEqual "job must occupy the only slot" (Just ()) running
+        withAsync (runReaderT Job.jobPoller env) $ \_ -> do
+          saturated <- Timeout.timeout 5000000 (takeMVar busy)
+          assertEqual "poller must observe the occupied slot" (Just ()) saturated
+          threadDelay 200000
+          count <- readIORef checks
+          assertEqual "capacity checks must respect the one-second polling interval" 1 count
+
 
 testOnJobFailed appPool jobPool = testCase "job error handler" $ do
   withRandomTable jobPool $ \tname -> do
