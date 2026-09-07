@@ -672,6 +672,7 @@ jobEventListener = do
   tname <- getTableName
   jwName <- liftIO jobWorkerName
   concurrencyControlFn <- getConcurrencyControlFn
+  ordering <- cfgJobOrdering . envConfig <$> getRunnerEnv
 
   let tryLockingJob jid mResCfg = withDbConnection $ \conn -> do
         let q = "UPDATE ? SET status=?, locked_at=now(), locked_by=?, attempts=attempts+1 WHERE id=? AND status in ? RETURNING id"
@@ -708,12 +709,15 @@ jobEventListener = do
                   t <- liftIO getCurrentTime
                   if (runAt_ <= t) && isNothing mLockedAt_
                     then do log LevelDebug $ LogText $ toS $ "Job needs needs to be run immediately. Attempting to fork in background. JobId=" <> show jid
-                            void $ async $ do
-                              -- Let's try to lock the job first... it is possible that it has already
-                              -- been picked up by the poller by the time we get here.
-                              tryLockingJob jid mResCfg >>= \case
-                                Nothing -> pure ()
-                                Just lockedJid -> runJob lockedJid
+                            case ordering of
+                              -- A notification wakes the queue; it must not let a new
+                              -- job bypass older eligible retries or expired locks.
+                              EarliestRunAtFirst -> void $ pollRunJob jwName mResCfg
+                              FewestAttemptsFirst -> void $ async $ do
+                                -- The default retains immediate dispatch of this job.
+                                tryLockingJob jid mResCfg >>= \case
+                                  Nothing -> pure ()
+                                  Just lockedJid -> runJob lockedJid
                     else log LevelDebug $ LogText $ toS $ "Job is either for future, is already locked, or would violate concurrency constraints. Skipping. JobId=" <> show jid
 
       concurrencyControlFn monitorDbConn >>= \case

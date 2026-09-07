@@ -49,6 +49,7 @@ import UnliftIO
 import Control.Exception (ArithException)
 import Data.Bifunctor(first)
 import System.Environment (lookupEnv)
+import qualified System.Timeout as Timeout
 
 $(Aeson.deriveJSON Aeson.defaultOptions ''Seconds)
 
@@ -91,6 +92,7 @@ tests appPool jobPool = testGroup "All tests"
                              , testGracefulShutdown appPool jobPool
                              , testPushFailedJobEndQueue jobPool
                              , testEarliestRunAtOrder jobPool
+                             , testNotificationOrdering jobPool
                              , testRetryBackoff appPool jobPool
                              , testJobDeletion appPool jobPool
                              , testGroup "callback tests"
@@ -454,6 +456,39 @@ testEarliestRunAtOrder jobPool = testCase "earliest scheduled retries and expire
           wait worker
           actual <- takeMVar selected
           assertEqual "overdue work must not starve behind attempt-zero jobs" (jobId old) actual
+
+testNotificationOrdering :: Pool Connection -> TestTree
+testNotificationOrdering jobPool = testCase "notifications respect earliest scheduled ordering" $
+  withRandomTable jobPool $ \tname -> do
+    now <- getCurrentTime
+    old <- Pool.withResource jobPool $ \conn -> do
+      job <- Job.scheduleJob conn tname (PayloadSucceed 0) (addUTCTime (-3600) now)
+      Job.saveJobIO conn tname job { jobStatus = Job.Retry, jobAttempts = 1 }
+    events <- newIORef []
+    ready <- newEmptyMVar
+    selected <- newEmptyMVar
+    completed <- newEmptyMVar
+    threads <- newIORef mempty
+    let logger _ event = do
+          atomicModifyIORef' events (\xs -> (event:xs, ()))
+          case event of
+            Job.LogText "[LISTEN/NOTIFY] Event loop" -> void $ tryPutMVar ready ()
+            _ -> pure ()
+        config = Job.mkConfig logger tname jobPool Job.UnlimitedConcurrentJobs
+          (putMVar selected . jobId)
+          (\cfg -> cfg { Job.cfgJobOrdering = Job.EarliestRunAtFirst
+                        , Job.cfgOnJobSuccess = \_ -> void $ tryPutMVar completed () })
+        env = Job.RunnerEnv { Job.envConfig = config, Job.envJobThreadsRef = threads }
+    withAsync (runReaderT Job.jobEventListener env) $ \listener -> do
+      listening <- Timeout.timeout 5000000 (takeMVar ready)
+      assertEqual "listener must subscribe before the new job is created" (Just ()) listening
+      _ <- Pool.withResource jobPool $ \conn -> Job.createJob conn tname (PayloadSucceed 0)
+      actual <- Timeout.timeout 5000000 (takeMVar selected)
+      logs <- readIORef events
+      listenerState <- poll listener
+      assertEqual ("notification must wake the oldest eligible job: " <> show logs <> "; listener=" <> show listenerState) (Just $ jobId old) actual
+      finished <- Timeout.timeout 5000000 (takeMVar completed)
+      assertEqual "selected job must finish before table cleanup" (Just ()) finished
 
 testOnJobFailed appPool jobPool = testCase "job error handler" $ do
   withRandomTable jobPool $ \tname -> do

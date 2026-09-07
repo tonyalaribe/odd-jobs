@@ -36,7 +36,7 @@ createJobTableQuery = "CREATE TABLE IF NOT EXISTS ?" <>
 createNotificationTrigger :: Query
 createNotificationTrigger = "create or replace function ?() returns trigger as $$" <>
   "begin \n" <>
-  "  perform pg_notify('?', \n" <>
+  "  perform pg_notify(?, \n" <>
   "    json_build_object('id', new.id, 'run_at', new.run_at, 'locked_at', new.locked_at)::text); \n" <>
   "  return new; \n" <>
   "end; \n" <>
@@ -64,7 +64,7 @@ createJobTable conn tname = void $ do
     )
   PGS.execute conn createNotificationTrigger
     ( fnName
-    , pgEventName tname
+    , channelName
     , trgName
     , tname
     , trgName
@@ -72,6 +72,8 @@ createJobTable conn tname = void $ do
     , fnName
     )
   where
+    -- pg_notify takes a text value; LISTEN takes an SQL identifier.
+    PGS.Identifier channelName = pgEventName tname
     fnName = PGS.Identifier $ "notify_job_monitor_for_" <> getTnameTxt tname
     trgName = PGS.Identifier $ "trg_notify_job_monitor_for_" <> getTnameTxt tname
     getTnameTxt (PGS.QualifiedIdentifier _ tname') = tname'
